@@ -1,4 +1,33 @@
 import * as cheerio from "cheerio";
+import {
+  RUTRACKER_BASE,
+  open,
+  login as browserLogin,
+  checkRuTracker as checkBrowser,
+  isLoggedIn,
+} from "./browser";
+
+export { RUTRACKER_BASE };
+
+// Último fetch para diagnóstico (usado pela route /test?action=search)
+let lastFetchInfo: { url?: string; ok?: boolean; len?: number; torTbl?: boolean; challenge?: boolean } | undefined;
+
+export function lastFetch() {
+  return lastFetchInfo;
+}
+
+// ─── Public API ─────────────────────────────────────────────────────────────
+
+export async function login(
+  username: string,
+  password: string
+): Promise<boolean> {
+  return browserLogin(username, password);
+}
+
+export async function checkRuTracker() {
+  return checkBrowser();
+}
 
 export interface RuTrackerTorrent {
   id: string;
@@ -8,219 +37,144 @@ export interface RuTrackerTorrent {
   seeds: number;
   leeches: number;
   category: string;
-  url: string;
   magnetLink?: string;
   infoHash?: string;
 }
 
-const RUTRACKER_URL = "https://rutracker.org";
-const RUTRACKER_FORUM = `${RUTRACKER_URL}/forum`;
-
-export class RuTrackerClient {
-  private cookies: string[] = [];
-  private isLoggedIn = false;
-
-  async login(username: string, password: string): Promise<boolean> {
-    try {
-      const formData = new URLSearchParams();
-      formData.append("login_username", username);
-      formData.append("login_password", password);
-      formData.append("login", "Вход");
-
-      const response = await fetch(`${RUTRACKER_FORUM}/login.php`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/x-www-form-urlencoded",
-          "User-Agent":
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        },
-        body: formData.toString(),
-        redirect: "manual",
-      });
-
-      const setCookies = response.headers.getSetCookie?.() || [];
-      if (setCookies.length > 0) {
-        this.cookies = setCookies.map((c) => c.split(";")[0]);
-      }
-
-      // Check if we got the session cookie
-      const cookieStr = this.cookies.join("; ");
-      this.isLoggedIn =
-        cookieStr.includes("bb_session") || cookieStr.includes("bb_data");
-
-      // If redirect, follow it to confirm login
-      if (response.status === 302 || response.status === 301) {
-        this.isLoggedIn = true;
-      }
-
-      return this.isLoggedIn;
-    } catch (error) {
-      console.error("RuTracker login error:", error);
-      return false;
-    }
+/**
+ * Search RuTracker.
+ * @param forumIds  – e.g. ["22"] for Зарубежное кино (HD Видео)
+ * @param only1080  – keep only results whose title contains "1080"
+ */
+export async function search(
+  query: string,
+  opts: { forumIds?: string[]; only1080?: boolean } = {}
+): Promise<RuTrackerTorrent[]> {
+  const params = new URLSearchParams();
+  params.set("nm", query);
+  if (opts.forumIds?.length) {
+    for (const f of opts.forumIds) params.append("f[]", f);
   }
 
-  async search(query: string): Promise<RuTrackerTorrent[]> {
-    try {
-      const formData = new URLSearchParams();
-      formData.append("nm", query);
-      // Forum IDs for movies and series
-      // 22 - Movies (foreign), 7 - Movies (russian), 
-      // 189 - Series (foreign), 9 - Series (russian)
-      // Leave empty to search all categories
-
-      const response = await fetch(`${RUTRACKER_FORUM}/tracker.php`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/x-www-form-urlencoded",
-          "User-Agent":
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-          Cookie: this.cookies.join("; "),
-        },
-        body: formData.toString(),
-      });
-
-      const html = await response.text();
-      return this.parseSearchResults(html);
-    } catch (error) {
-      console.error("RuTracker search error:", error);
-      return [];
-    }
+  const url = `${RUTRACKER_BASE}/tracker.php?${params}`;
+  const html = await open(url);
+  if (!html) {
+    lastFetchInfo = { url, ok: false };
+    return [];
   }
+  lastFetchInfo = {
+    url,
+    ok: true,
+    len: html.length,
+    torTbl: html.includes("tor-tbl"),
+    challenge: html.includes("Один момент") || html.includes("Just a moment"),
+  };
 
-  private parseSearchResults(html: string): RuTrackerTorrent[] {
-    const $ = cheerio.load(html);
-    const torrents: RuTrackerTorrent[] = [];
+  return parseResults(html, opts.only1080 ?? false);
+}
 
-    $("#tor-tbl tbody tr").each((_, row) => {
-      try {
-        const $row = $(row);
+export async function getMagnet(torrentId: string): Promise<string | null> {
+  const html = await open(`${RUTRACKER_BASE}/viewtopic.php?t=${torrentId}`);
+  if (!html) return null;
+  const $ = cheerio.load(html);
+  return $('a[href^="magnet:"]').first().attr("href") ?? null;
+}
 
-        const titleLink = $row.find("td.t-title-col a.tLink");
-        const title = titleLink.text().trim();
-        const href = titleLink.attr("href") || "";
-        const idMatch = href.match(/t=(\d+)/);
-        const id = idMatch ? idMatch[1] : "";
+export { isLoggedIn };
 
-        if (!id || !title) return;
+// ─── HTML parser ────────────────────────────────────────────────────────────
 
-        const sizeEl = $row.find("td.tor-size a, td.tor-size u");
-        const sizeBytes = parseInt(sizeEl.attr("data-ts_text") || "0", 10);
-        const sizeText = sizeEl.text().trim() || formatBytes(sizeBytes);
+function parseResults(html: string, only1080: boolean): RuTrackerTorrent[] {
+  const $ = cheerio.load(html);
+  const rows: RuTrackerTorrent[] = [];
 
-        const seedsEl = $row.find("td.seed b, td:nth-child(7) b");
-        const seeds = parseInt(seedsEl.text().trim() || "0", 10);
+  $("#tor-tbl tbody tr").each((_, el) => {
+    try {
+      const $r = $(el);
+      const link = $r.find("a.tLink");
+      const title = link.text().trim();
+      const href = link.attr("href") ?? "";
+      const id = href.match(/t=(\d+)/)?.[1] ?? "";
+      if (!id || !title) return;
 
-        const leechesEl = $row.find("td.leech b, td:nth-child(8) b");
-        const leeches = parseInt(leechesEl.text().trim() || "0", 10);
-
-        const category = $row.find("td.f-name-col a").text().trim();
-
-        // Try to extract magnet link directly
-        const magnetEl = $row.find("a[href^='magnet:']");
-        const magnetLink = magnetEl.attr("href") || undefined;
-
-        torrents.push({
-          id,
-          title,
-          size: sizeText,
-          sizeBytes,
-          seeds,
-          leeches,
-          category,
-          url: `${RUTRACKER_FORUM}/viewtopic.php?t=${id}`,
-          magnetLink,
-        });
-      } catch {
-        // Skip malformed rows
+      if (only1080) {
+        const lo = title.toLowerCase();
+        if (
+          !lo.includes("1080") &&
+          !lo.includes("fullhd") &&
+          !lo.includes("full hd") &&
+          !lo.includes("4k") &&
+          !lo.includes("2160") &&
+          !lo.includes("uhd")
+        )
+          return;
       }
-    });
 
-    // Sort by seeds descending
-    return torrents.sort((a, b) => b.seeds - a.seeds);
-  }
-
-  async getMagnetLink(torrentId: string): Promise<string | null> {
-    try {
-      const response = await fetch(
-        `${RUTRACKER_FORUM}/viewtopic.php?t=${torrentId}`,
-        {
-          headers: {
-            "User-Agent":
-              "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            Cookie: this.cookies.join("; "),
-          },
-        }
+      const sizeTd = $r.find("td.tor-size");
+      const sizeBytes = parseInt(
+        sizeTd.attr("data-ts_text") ??
+          sizeTd.find("u, a").attr("data-ts_text") ??
+          "0",
+        10
       );
 
-      const html = await response.text();
-      const $ = cheerio.load(html);
+      const seeds = parseInt(
+        $r.find("td b.seedmed").first().text().trim() ||
+          $r.find("td.seed").first().text().trim() ||
+          "0",
+        10
+      );
+      const leeches = parseInt(
+        $r.find("td.leechmed").first().text().trim() ||
+          $r.find("td.leech").first().text().trim() ||
+          "0",
+        10
+      );
 
-      // Find magnet link on the page
-      const magnetLink = $('a[href^="magnet:"]').first().attr("href");
-      return magnetLink || null;
-    } catch (error) {
-      console.error("RuTracker getMagnetLink error:", error);
-      return null;
-    }
-  }
-}
+      const category = $r.find("td.f-name-col a").text().trim();
 
-function formatBytes(bytes: number): string {
-  if (bytes === 0) return "0 B";
-  const sizes = ["B", "KB", "MB", "GB", "TB"];
-  const i = Math.floor(Math.log(bytes) / Math.log(1024));
-  return `${(bytes / Math.pow(1024, i)).toFixed(2)} ${sizes[i]}`;
-}
-
-// Extract info hash from magnet link
-export function extractInfoHash(magnetLink: string): string | null {
-  const match = magnetLink.match(/btih:([a-fA-F0-9]{40})/i);
-  if (match) return match[1].toLowerCase();
-
-  const base32Match = magnetLink.match(/btih:([A-Z2-7]{32})/i);
-  if (base32Match) {
-    // Convert base32 to hex
-    try {
-      return base32ToHex(base32Match[1]);
+      rows.push({
+        id,
+        title,
+        size: fmtBytes(sizeBytes),
+        sizeBytes,
+        seeds,
+        leeches,
+        category,
+      });
     } catch {
-      return null;
+      /* skip */
     }
+  });
+
+  return rows.sort((a, b) => b.seeds - a.seeds);
+}
+
+// ─── Util ───────────────────────────────────────────────────────────────────
+
+function fmtBytes(b: number): string {
+  if (b <= 0) return "N/A";
+  const u = ["B", "KB", "MB", "GB", "TB"];
+  const i = Math.floor(Math.log(b) / Math.log(1024));
+  return `${(b / 1024 ** i).toFixed(1)} ${u[i]}`;
+}
+
+export function extractInfoHash(magnet: string): string | null {
+  const hex = magnet.match(/btih:([a-fA-F0-9]{40})/i);
+  if (hex) return hex[1].toLowerCase();
+  const b32 = magnet.match(/btih:([A-Z2-7]{32})/i);
+  if (b32) {
+    const alpha = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+    let bits = "";
+    for (const c of b32[1].toUpperCase()) {
+      const v = alpha.indexOf(c);
+      if (v < 0) return null;
+      bits += v.toString(2).padStart(5, "0");
+    }
+    let h = "";
+    for (let i = 0; i + 4 <= bits.length; i += 4)
+      h += parseInt(bits.slice(i, i + 4), 2).toString(16);
+    return h;
   }
   return null;
-}
-
-function base32ToHex(base32: string): string {
-  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
-  let bits = "";
-  for (const char of base32.toUpperCase()) {
-    const val = alphabet.indexOf(char);
-    if (val === -1) throw new Error("Invalid base32");
-    bits += val.toString(2).padStart(5, "0");
-  }
-  let hex = "";
-  for (let i = 0; i + 4 <= bits.length; i += 4) {
-    hex += parseInt(bits.substring(i, i + 4), 2).toString(16);
-  }
-  return hex;
-}
-
-// Singleton instance management
-let clientInstance: RuTrackerClient | null = null;
-let lastCredentials = "";
-
-export async function getRuTrackerClient(
-  username: string,
-  password: string
-): Promise<RuTrackerClient> {
-  const credKey = `${username}:${password}`;
-  if (clientInstance && lastCredentials === credKey) {
-    return clientInstance;
-  }
-
-  const client = new RuTrackerClient();
-  await client.login(username, password);
-  clientInstance = client;
-  lastCredentials = credKey;
-  return client;
 }

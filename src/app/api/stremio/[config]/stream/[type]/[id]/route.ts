@@ -1,92 +1,83 @@
 import { NextRequest, NextResponse } from "next/server";
-import { searchTorrents, formatSize } from "@/lib/torrent-search";
+import { decodeConfig } from "@/lib/manifest";
+import { login, search, getMagnet, extractInfoHash } from "@/lib/rutracker";
 import { getIMDBInfo, buildSearchQueries } from "@/lib/imdb";
 
-function corsHeaders() {
-  return {
-    "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Methods": "GET, OPTIONS",
-    "Access-Control-Allow-Headers": "*",
-    "Content-Type": "application/json",
-  };
-}
+const CORS = { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Headers": "*", "Content-Type": "application/json" };
+export const OPTIONS = () => new NextResponse(null, { status: 204, headers: CORS });
 
-export async function OPTIONS() {
-  return new NextResponse(null, { status: 204, headers: corsHeaders() });
-}
-
-interface StremioStream {
-  name: string;
-  title: string;
-  infoHash?: string;
-  url?: string;
-  behaviorHints?: Record<string, unknown>;
-}
+// RuTracker forum IDs para cinema/séries estrangeiros
+const HD_FORUM_IDS = [
+  "313",   // Зарубежное кино (HD Video) — Cinema estrangeiro HD
+  "1457",  // Зарубежное кино (UHD Video) — Cinema estrangeiro 4K
+  "1106",  // Зарубежные сериалы (HD Video) — Séries estrangeiras HD
+];
 
 export async function GET(
-  _request: NextRequest,
+  _req: NextRequest,
   { params }: { params: Promise<{ config: string; type: string; id: string }> }
 ) {
-  const { type, id: rawId } = await params;
-  const headers = corsHeaders();
-
+  const { config, type, id: rawId } = await params;
   const id = rawId.replace(/\.json$/, "");
+  const cfg = decodeConfig(config);
+  if (!cfg) return NextResponse.json({ streams: [] }, { headers: CORS });
 
   try {
-    const streams = await handleStreamRequest(type, id);
-    return NextResponse.json({ streams }, { headers });
-  } catch (error) {
-    console.error("Stream handler error:", error);
-    return NextResponse.json({ streams: [] }, { headers });
-  }
-}
+    // login
+    await login(cfg.username, cfg.password);
 
-async function handleStreamRequest(
-  type: string,
-  id: string
-): Promise<StremioStream[]> {
-  // Parse the ID: "tt1234567" for movies, "tt1234567:1:5" for series S01E05
-  const parts = id.split(":");
-  const imdbId = parts[0];
-  const season = parts.length > 1 ? parseInt(parts[1], 10) : undefined;
-  const episode = parts.length > 2 ? parseInt(parts[2], 10) : undefined;
+    // resolve IMDB → title
+    const parts = id.split(":");
+    const imdbId = parts[0];
+    if (!imdbId.startsWith("tt")) return NextResponse.json({ streams: [] }, { headers: CORS });
 
-  // Skip non-IMDB IDs
-  if (!imdbId.startsWith("tt")) return [];
+    const season = parts.length > 1 ? parseInt(parts[1], 10) : undefined;
+    const episode = parts.length > 2 ? parseInt(parts[2], 10) : undefined;
 
-  const info = await getIMDBInfo(imdbId);
-  if (!info) return [];
+    const info = await getIMDBInfo(imdbId);
+    if (!info) return NextResponse.json({ streams: [] }, { headers: CORS });
 
-  // Override type with what Cinemeta tells us
-  const actualType = info.type || type;
-  void actualType;
+    const queries = buildSearchQueries(info, season, episode);
+    const forumIds = type === "series" ? ["1106"] : ["313", "1457"];
 
-  const queries = buildSearchQueries(info, season, episode);
-  const allStreams: StremioStream[] = [];
-  const seenHashes = new Set<string>();
+    const streams: { name: string; title: string; infoHash?: string; url?: string }[] = [];
+    const seen = new Set<string>();
 
-  for (const query of queries) {
-    const torrents = await searchTorrents(query);
-
-    for (const torrent of torrents) {
-      const hash = torrent.infoHash.toLowerCase();
-      if (seenHashes.has(hash)) continue;
-      seenHashes.add(hash);
-
-      const sizeStr = formatSize(torrent.sizeBytes);
-
-      allStreams.push({
-        name: `RuTracker+\n${sizeStr}`,
-        title: `${torrent.title}\n\u{1F464} ${torrent.seeders} seeds | \u{1F4BE} ${sizeStr} | ${torrent.source}`,
-        infoHash: hash,
+    for (const q of queries) {
+      const results = await search(q, {
+        forumIds,
+        only1080: true,
       });
 
-      if (allStreams.length >= 20) break;
+      for (const t of results) {
+        if (seen.has(t.id) || t.seeds <= 0) continue;
+        seen.add(t.id);
+
+        // get magnet
+        let hash: string | null = null;
+        let magnet: string | undefined;
+        if (t.magnetLink) {
+          hash = extractInfoHash(t.magnetLink);
+          magnet = t.magnetLink;
+        } else {
+          const m = await getMagnet(t.id);
+          if (m) { hash = extractInfoHash(m); magnet = m; }
+        }
+        if (!hash && !magnet) continue;
+
+        streams.push({
+          name: `RuTracker\n${t.size}`,
+          title: `${t.title}\n\u{1F464} ${t.seeds} seeds | \u{1F4BE} ${t.size}`,
+          ...(hash ? { infoHash: hash } : { url: magnet }),
+        });
+        if (streams.length >= 15) break;
+      }
+      if (streams.length >= 5) break;
     }
 
-    // If we got enough results from first query, stop
-    if (allStreams.length >= 5) break;
+    return NextResponse.json({ streams }, { headers: CORS });
+  } catch (e) {
+    console.error("stream error", e);
+    return NextResponse.json({ streams: [] }, { headers: CORS });
   }
-
-  return allStreams;
 }
