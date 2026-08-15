@@ -19,13 +19,21 @@ export interface StremioManifestCatalog {
   extra?: Array<{ name: string; isRequired?: boolean }>;
 }
 
+export function getBaseUrl(request: Request): string {
+  const host = request.headers.get("host") || "localhost:3000";
+  // Always use HTTPS in production, HTTP only for localhost
+  const isLocalhost = host.startsWith("localhost") || host.startsWith("127.0.0.1");
+  const proto = isLocalhost ? "http" : "https";
+  return `${proto}://${host}`;
+}
+
 export function getManifest(baseUrl: string): StremioManifest {
   return {
     id: "org.stremio.rutracker",
     version: "1.0.0",
     name: "RuTracker",
     description:
-      "Pesquise filmes e séries no RuTracker.org - O maior tracker de torrents da Rússia. Requer conta no RuTracker.",
+      "Pesquise filmes e séries no RuTracker.org. Requer conta no RuTracker.",
     logo: `${baseUrl}/logo.svg`,
     resources: [
       "stream",

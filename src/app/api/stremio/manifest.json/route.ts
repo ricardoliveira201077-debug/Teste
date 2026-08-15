@@ -1,11 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getManifest } from "@/lib/manifest";
+import { getManifest, getBaseUrl } from "@/lib/manifest";
 
 function corsHeaders() {
   return {
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Methods": "GET, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type",
+    "Access-Control-Allow-Headers": "*",
     "Content-Type": "application/json",
   };
 }
@@ -15,8 +15,6 @@ export async function OPTIONS() {
 }
 
 export async function GET(request: NextRequest) {
-  const proto = request.headers.get("x-forwarded-proto") || "https";
-  const host = request.headers.get("host") || "localhost:3000";
-  const baseUrl = `${proto}://${host}`;
+  const baseUrl = getBaseUrl(request);
   return NextResponse.json(getManifest(baseUrl), { headers: corsHeaders() });
 }

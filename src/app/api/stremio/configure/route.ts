@@ -1,10 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
+import { getBaseUrl } from "@/lib/manifest";
 
 function corsHeaders() {
   return {
     "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Methods": "POST, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type",
+    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+    "Access-Control-Allow-Headers": "*",
     "Content-Type": "application/json",
   };
 }
@@ -13,9 +14,16 @@ export async function OPTIONS() {
   return new NextResponse(null, { status: 204, headers: corsHeaders() });
 }
 
+// GET /api/stremio/configure → redirect to the configuration page
+export async function GET(request: NextRequest) {
+  const baseUrl = getBaseUrl(request);
+  return NextResponse.redirect(`${baseUrl}/`, { status: 302 });
+}
+
+// POST /api/stremio/configure → generate config
 export async function POST(request: NextRequest) {
   const headers = corsHeaders();
-  
+
   try {
     const body = await request.json();
     const { username, password } = body;
@@ -27,20 +35,17 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Encode config
     const config = Buffer.from(
       JSON.stringify({ username, password })
     ).toString("base64");
 
-    const proto = request.headers.get("x-forwarded-proto") || "https";
-    const host = request.headers.get("host") || "localhost:3000";
-    const baseUrl = `${proto}://${host}`;
+    const baseUrl = getBaseUrl(request);
 
     return NextResponse.json(
       {
         config,
         manifestUrl: `${baseUrl}/api/stremio/${config}/manifest.json`,
-        installUrl: `stremio://${host}/api/stremio/${config}/manifest.json`,
+        installUrl: `stremio://${request.headers.get("host") || "localhost:3000"}/api/stremio/${config}/manifest.json`,
       },
       { headers }
     );
