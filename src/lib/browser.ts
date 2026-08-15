@@ -21,20 +21,35 @@ let loggedIn = false;
 let loginExpiry = 0;
 const SESSION_TTL = 25 * 60 * 1000;
 
-export function getContext(): Promise<BrowserContext> {
-  if (g.__rtCtx) return Promise.resolve(g.__rtCtx);
-  if (g.__rtCtxPromise) return g.__rtCtxPromise;
-  g.__rtCtxPromise = firefox
-    .launchPersistentContext(PROFILE_DIR, {
-      headless: false,
-      viewport: { width: 1280, height: 800 },
-      locale: "ru-RU",
-    })
-    .then(async (ctx) => {
-      g.__rtCtx = ctx;
-      await injectSession(ctx);
-      return ctx;
-    });
+async function launchContext(): Promise<BrowserContext> {
+  const ctx = await firefox.launchPersistentContext(PROFILE_DIR, {
+    headless: false,
+    viewport: { width: 1280, height: 800 },
+    locale: "ru-RU",
+  });
+  await injectSession(ctx).catch(() => {});
+  return ctx;
+}
+
+export async function getContext(): Promise<BrowserContext> {
+  if (g.__rtCtx) {
+    const b = g.__rtCtx.browser();
+    if (b && b.isConnected()) return g.__rtCtx;
+    // contexto/browser fechado (ex.: utilizador fechou a janela) — recomeçar
+    g.__rtCtx = undefined;
+    g.__rtCtxPromise = undefined;
+  }
+  if (g.__rtCtxPromise) {
+    try {
+      return await g.__rtCtxPromise;
+    } catch {
+      g.__rtCtxPromise = undefined;
+    }
+  }
+  g.__rtCtxPromise = launchContext().then((ctx) => {
+    g.__rtCtx = ctx;
+    return ctx;
+  });
   return g.__rtCtxPromise;
 }
 
@@ -78,11 +93,11 @@ async function waitReady(page: Page, timeoutMs: number): Promise<boolean> {
 
 /**
  * Abre um URL no Firefox persistente e devolve o HTML final (após resolver
- * desafio Cloudflare). Devolve null em caso de erro.
+ * desafio Cloudflare). Se o browser tiver sido fechado, relança e tenta de novo.
  */
-export async function open(
+async function openOnce(
   url: string,
-  challengeTimeoutMs = 90_000
+  challengeTimeoutMs: number
 ): Promise<string | null> {
   const ctx = await getContext();
   await ensureSession(ctx);
@@ -91,11 +106,31 @@ export async function open(
     await page.goto(url, { waitUntil: "domcontentloaded", timeout: 45_000 });
     const ok = await waitReady(page, challengeTimeoutMs);
     return ok ? await page.content() : null;
-  } catch (e) {
-    console.error("browser open error:", e);
-    return null;
   } finally {
     await page.close().catch(() => {});
+  }
+}
+
+export async function open(
+  url: string,
+  challengeTimeoutMs = 90_000
+): Promise<string | null> {
+  try {
+    return await openOnce(url, challengeTimeoutMs);
+  } catch (e) {
+    if (/closed|disconnected/i.test(String((e as Error)?.message ?? e))) {
+      console.error("browser fechado — a relançar...");
+      g.__rtCtx = undefined;
+      g.__rtCtxPromise = undefined;
+      try {
+        return await openOnce(url, challengeTimeoutMs);
+      } catch (e2) {
+        console.error("browser open error (retry):", e2);
+        return null;
+      }
+    }
+    console.error("browser open error:", e);
+    return null;
   }
 }
 
