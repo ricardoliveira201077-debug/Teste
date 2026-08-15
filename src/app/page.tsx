@@ -107,7 +107,12 @@ export default function Home() {
           </div>
 
           {/* Features */}
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-12">
+          <div className="grid grid-cols-1 sm:grid-cols-4 gap-4 mb-12">
+            <div className="bg-white/5 backdrop-blur-sm rounded-xl p-5 border border-white/10">
+              <div className="text-2xl mb-2">🔍</div>
+              <h3 className="font-semibold text-white mb-1">Pesquisa Integrada</h3>
+              <p className="text-sm text-gray-400">Pesquise diretamente na barra de busca do Stremio e veja resultados do RuTracker</p>
+            </div>
             <div className="bg-white/5 backdrop-blur-sm rounded-xl p-5 border border-white/10">
               <div className="text-2xl mb-2">🎬</div>
               <h3 className="font-semibold text-white mb-1">Filmes & Séries</h3>
@@ -279,11 +284,15 @@ export default function Home() {
                     </li>
                     <li className="flex gap-2">
                       <span className="text-[#e94560] font-bold">3.</span>
-                      Cole a URL no campo &quot;Addon Repository URL&quot;
+                      Cole a URL no campo &quot;Addon Repository URL&quot; e instale
                     </li>
                     <li className="flex gap-2">
                       <span className="text-[#e94560] font-bold">4.</span>
-                      Instale o addon e pronto! Ao buscar filmes/séries, verá streams do RuTracker
+                      <strong>Pesquise</strong> na barra de busca do Stremio — resultados do RuTracker aparecerão!
+                    </li>
+                    <li className="flex gap-2">
+                      <span className="text-[#e94560] font-bold">5.</span>
+                      Ao abrir qualquer filme/série (com IMDB ID), streams do RuTracker aparecem automaticamente
                     </li>
                   </ol>
                 </div>

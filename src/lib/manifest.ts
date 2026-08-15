@@ -5,7 +5,7 @@ export interface StremioManifest {
   description: string;
   logo?: string;
   background?: string;
-  resources: string[];
+  resources: (string | { name: string; types: string[]; idPrefixes?: string[] })[];
   types: string[];
   catalogs: StremioManifestCatalog[];
   idPrefixes: string[];
@@ -27,9 +27,34 @@ export function getManifest(baseUrl: string): StremioManifest {
     description:
       "Pesquise filmes e séries no RuTracker.org - O maior tracker de torrents da Rússia. Requer conta no RuTracker.",
     logo: `${baseUrl}/logo.svg`,
-    resources: ["stream"],
+    resources: [
+      "stream",
+      {
+        name: "catalog",
+        types: ["movie", "series"],
+      },
+    ],
     types: ["movie", "series"],
-    catalogs: [],
+    catalogs: [
+      {
+        type: "movie",
+        id: "rutracker-search",
+        name: "RuTracker",
+        extra: [
+          { name: "search", isRequired: true },
+          { name: "skip", isRequired: false },
+        ],
+      },
+      {
+        type: "series",
+        id: "rutracker-search",
+        name: "RuTracker",
+        extra: [
+          { name: "search", isRequired: true },
+          { name: "skip", isRequired: false },
+        ],
+      },
+    ],
     idPrefixes: ["tt"],
     behaviorHints: {
       configurable: true,

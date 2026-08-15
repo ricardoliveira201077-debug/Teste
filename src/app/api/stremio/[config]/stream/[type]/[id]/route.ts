@@ -46,7 +46,6 @@ export async function GET(
   const { config, type, id: rawId } = await params;
   const headers = corsHeaders();
 
-  // The id comes with ".json" suffix from Stremio
   const id = rawId.replace(/\.json$/, "");
 
   const parsed = parseConfig(config);
@@ -74,19 +73,38 @@ async function handleStreamRequest(
   type: string,
   id: string
 ): Promise<StremioStream[]> {
+  const client = await getRuTrackerClient(username, password);
+
+  // Handle direct RuTracker IDs (from our catalog search results)
+  if (id.startsWith("rutracker:")) {
+    const torrentId = id.replace("rutracker:", "");
+    const magnetLink = await client.getMagnetLink(torrentId);
+    if (!magnetLink) return [];
+
+    const infoHash = extractInfoHash(magnetLink);
+    const stream: StremioStream = {
+      name: "RuTracker",
+      title: "Stream from RuTracker",
+    };
+
+    if (infoHash) {
+      stream.infoHash = infoHash;
+    } else {
+      stream.url = magnetLink;
+    }
+
+    return [stream];
+  }
+
+  // Handle IMDB IDs: "tt1234567" for movies, "tt1234567:1:5" for series S01E05
   const parts = id.split(":");
   const imdbId = parts[0];
   const season = parts.length > 1 ? parseInt(parts[1], 10) : undefined;
   const episode = parts.length > 2 ? parseInt(parts[2], 10) : undefined;
 
-  // Adjust type for cinemeta lookup
-  const lookupType = type === "series" ? "series" : "movie";
-  void lookupType;
-
   const info = await getIMDBInfo(imdbId);
   if (!info) return [];
 
-  const client = await getRuTrackerClient(username, password);
   const queries = buildSearchQueries(info, season, episode);
 
   const allStreams: StremioStream[] = [];
