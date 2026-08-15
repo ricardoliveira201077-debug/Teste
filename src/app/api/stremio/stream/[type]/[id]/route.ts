@@ -19,17 +19,14 @@ interface StremioStream {
   name: string;
   title: string;
   infoHash?: string;
-  url?: string;
-  behaviorHints?: Record<string, unknown>;
 }
 
 export async function GET(
   _request: NextRequest,
-  { params }: { params: Promise<{ config: string; type: string; id: string }> }
+  { params }: { params: Promise<{ type: string; id: string }> }
 ) {
   const { type, id: rawId } = await params;
   const headers = corsHeaders();
-
   const id = rawId.replace(/\.json$/, "");
 
   try {
@@ -41,50 +38,37 @@ export async function GET(
   }
 }
 
-async function handleStreamRequest(
-  type: string,
-  id: string
-): Promise<StremioStream[]> {
-  // Parse the ID: "tt1234567" for movies, "tt1234567:1:5" for series S01E05
+async function handleStreamRequest(type: string, id: string): Promise<StremioStream[]> {
   const parts = id.split(":");
   const imdbId = parts[0];
   const season = parts.length > 1 ? parseInt(parts[1], 10) : undefined;
   const episode = parts.length > 2 ? parseInt(parts[2], 10) : undefined;
 
-  // Skip non-IMDB IDs
   if (!imdbId.startsWith("tt")) return [];
 
   const info = await getIMDBInfo(imdbId);
   if (!info) return [];
 
-  // Override type with what Cinemeta tells us
-  const actualType = info.type || type;
-  void actualType;
-
+  void type;
   const queries = buildSearchQueries(info, season, episode);
   const allStreams: StremioStream[] = [];
   const seenHashes = new Set<string>();
 
   for (const query of queries) {
     const torrents = await searchTorrents(query);
-
     for (const torrent of torrents) {
       const hash = torrent.infoHash.toLowerCase();
       if (seenHashes.has(hash)) continue;
       seenHashes.add(hash);
 
       const sizeStr = formatSize(torrent.sizeBytes);
-
       allStreams.push({
-        name: `RuTracker+\n${sizeStr}`,
+        name: `Torrent Finder\n${sizeStr}`,
         title: `${torrent.title}\n\u{1F464} ${torrent.seeders} seeds | \u{1F4BE} ${sizeStr} | ${torrent.source}`,
         infoHash: hash,
       });
-
       if (allStreams.length >= 20) break;
     }
-
-    // If we got enough results from first query, stop
     if (allStreams.length >= 5) break;
   }
 

@@ -21,7 +21,6 @@ export interface StremioManifestCatalog {
 
 export function getBaseUrl(request: Request): string {
   const host = request.headers.get("host") || "localhost:3000";
-  // Always use HTTPS in production, HTTP only for localhost
   const isLocalhost = host.startsWith("localhost") || host.startsWith("127.0.0.1");
   const proto = isLocalhost ? "http" : "https";
   return `${proto}://${host}`;
@@ -29,14 +28,18 @@ export function getBaseUrl(request: Request): string {
 
 export function getManifest(baseUrl: string): StremioManifest {
   return {
-    id: "org.stremio.rutracker",
+    id: "org.stremio.torrentfinder",
     version: "1.0.0",
-    name: "RuTracker",
+    name: "Torrent Finder",
     description:
-      "Pesquise filmes e séries no RuTracker.org. Requer conta no RuTracker.",
+      "Pesquise filmes e séries com torrents de múltiplas fontes (1337x, TPB, RuTracker, e mais). Sem necessidade de conta.",
     logo: `${baseUrl}/logo.svg`,
     resources: [
-      "stream",
+      {
+        name: "stream",
+        types: ["movie", "series"],
+        idPrefixes: ["tt"],
+      },
       {
         name: "catalog",
         types: ["movie", "series"],
@@ -46,8 +49,8 @@ export function getManifest(baseUrl: string): StremioManifest {
     catalogs: [
       {
         type: "movie",
-        id: "rutracker-search",
-        name: "RuTracker",
+        id: "torrentfinder-search",
+        name: "Torrent Finder",
         extra: [
           { name: "search", isRequired: true },
           { name: "skip", isRequired: false },
@@ -55,8 +58,8 @@ export function getManifest(baseUrl: string): StremioManifest {
       },
       {
         type: "series",
-        id: "rutracker-search",
-        name: "RuTracker",
+        id: "torrentfinder-search",
+        name: "Torrent Finder",
         extra: [
           { name: "search", isRequired: true },
           { name: "skip", isRequired: false },
@@ -65,8 +68,7 @@ export function getManifest(baseUrl: string): StremioManifest {
     ],
     idPrefixes: ["tt"],
     behaviorHints: {
-      configurable: true,
-      configurationRequired: true,
+      configurable: false,
     },
   };
 }
